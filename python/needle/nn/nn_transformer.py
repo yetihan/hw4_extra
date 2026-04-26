@@ -1,4 +1,4 @@
-from typing import List
+from typing import TYPE_CHECKING, cast, List
 from needle.autograd import Tensor
 import needle.backend_ndarray.ndarray as ndarray
 from needle import ops
@@ -48,13 +48,24 @@ class MultiHeadAttention(Module):
         return ndarray.array(
             mask, device=device)
 
-    def matmul(self, a, b_transpose):
+    def matmul(self, a: Tensor, b: Tensor):
         """
         batched matrix multiplication;
+        a:           (..., M, K)     ──reshape──► (..., M, 1, K) ──broadcast──► (..., M, N, K)
+        b            (..., K, N) 
+        b_transpose: (..., N, K)     ──reshape──► (..., 1, N, K) ──broadcast──► (..., M, N, K)
+                                                                                │
+                                                                        逐元素乘
+                                                                                │      
+                                                                        sum(axis=-1)
+                                                                                │
+                                                                        (..., M, N)
+
         """
         a_shape = (*a.shape[:-1], 1, *a.shape[-1:])
         a = a.reshape(a_shape)
 
+        b_transpose = b.transpose((-1,-2))
         b_transpose_shape = (*b_transpose.shape[:-2], 1, *b_transpose.shape[-2:])
         b_transpose = b_transpose.reshape(b_transpose_shape)
 
@@ -92,7 +103,7 @@ class MultiHeadAttention(Module):
 
     def forward(
         self,
-        q, k, v,
+        q: Tensor, k: Tensor, v: Tensor,
     ):
         """
         The forward function of the MultiHeadAttention activation function.
@@ -109,7 +120,16 @@ class MultiHeadAttention(Module):
         probs = None
 
         ### BEGIN YOUR SOLUTION
-        raise NotImplementedError()
+        
+        # softmax(q@k.T/d**0.5+mask)v
+        
+        s = self.matmul(q, k.T)/np.sqrt(q_dim)
+        if self.causal:
+            mask = self.create_causal_mask(keys_values_len, queries_len, device=self.device)
+            mask = mask.broadcast_to(s.shape)
+            s = s + mask
+        probs = self.dropout(self.softmax(s))
+        result =  self.matmul(probs, v)        
         ### END YOUR SOLUTION
 
         return result, probs
