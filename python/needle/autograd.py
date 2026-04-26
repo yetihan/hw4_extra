@@ -1,23 +1,23 @@
 """Core data structures."""
+from functools import partial
+from gettext import npgettext
+
 import needle
-from .backend_numpy import Device, cpu, all_devices
-from typing import List, Optional, NamedTuple, Tuple, Union
+from .backend_numpy import Device
+from .backend_selection import cpu, all_devices
+from typing import List, Optional, NamedTuple, Tuple, Union, Dict
 from collections import namedtuple
 import numpy
 
 from needle import init
+from collections import defaultdict
 
 # needle version
 LAZY_MODE = False
 TENSOR_COUNTER = 0
 
-# NOTE: we will import numpy as the array_api
-# as the backend for our computations, this line will change in later homeworks
+from .backend_selection import array_api, NDArray
 
-import numpy as array_api
-NDArray = numpy.ndarray
-
-from .backend_selection import array_api, NDArray, default_device
 
 class Op:
     """Operator definition."""
@@ -172,6 +172,10 @@ class TensorTuple(Value):
     def __getitem__(self, index: int):
         return needle.ops.tuple_get_item(self, index)
 
+    def __iter__(self):
+        for i in range(len(self)):
+            yield self[i]
+
     def tuple(self):
         return tuple([x for x in self])
 
@@ -216,7 +220,7 @@ class Tensor(Value):
                     array.numpy(), device=device, dtype=dtype
                 )
         else:
-            device = device if device else default_device()
+            device = device if device else cpu()
             cached_data = Tensor._array_from_numpy(array, device=device, dtype=dtype)
 
         self._init(
@@ -338,14 +342,18 @@ class Tensor(Value):
         else:
             return needle.ops.DivScalar(other)(self)
 
+    @property
+    def T(self):
+        return needle.ops.Transpose()(self)
+
     def __matmul__(self, other):
         return needle.ops.MatMul()(self, other)
 
     def matmul(self, other):
         return needle.ops.MatMul()(self, other)
 
-    def sum(self, axes=None):
-        return needle.ops.Summation(axes)(self)
+    def sum(self, axes=None, keepdims=False):
+        return needle.ops.Summation(axes, keepdims=keepdims)(self)
 
     def broadcast_to(self, shape):
         return needle.ops.BroadcastTo(shape)(self)
@@ -359,11 +367,14 @@ class Tensor(Value):
     def transpose(self, axes=None):
         return needle.ops.Transpose(axes)(self)
 
-
-
+    def __rsub__(self, other):
+        return needle.ops.AddScalar(other)(needle.ops.Negate()(self))
 
     __radd__ = __add__
     __rmul__ = __mul__
+
+
+
 
 def compute_gradient_of_variables(output_tensor, out_grad):
     """Take gradient of output node with respect to each node in node_list.
@@ -371,17 +382,29 @@ def compute_gradient_of_variables(output_tensor, out_grad):
     Store the computed result in the grad field of each Variable.
     """
     # a map from node to a list of gradient contributions from each output node
-    node_to_output_grads_list: Dict[Tensor, List[Tensor]] = {}
+    node_to_output_grads_list: defaultdict[Tensor, List[Tensor]] = defaultdict(list)
     # Special note on initializing gradient of
     # We are really taking a derivative of the scalar reduce_sum(output_node)
     # instead of the vector output_node. But this is the common case for loss function.
     node_to_output_grads_list[output_tensor] = [out_grad]
 
     # Traverse graph in reverse topological order given the output_node that we are taking gradient wrt.
-    reverse_topo_order = list(reversed(find_topo_sort([output_tensor])))
-
+    reverse_topo_order:List[Tensor] = list(reversed(find_topo_sort([output_tensor])))
     ### BEGIN YOUR SOLUTION
-    raise NotImplementedError()
+    for cur_node in reverse_topo_order:
+        partial_lst = node_to_output_grads_list[cur_node]
+        if partial_lst:
+            adj_cur = sum_node_list(partial_lst)
+        else:
+            continue
+        if cur_node.requires_grad:
+            cur_node.grad = adj_cur
+        if cur_node.is_leaf():
+            continue
+        partial_grad_lst = cur_node.op.gradient_as_tuple(adj_cur, cur_node)
+        for prev_node,partial_grad  in zip(cur_node.inputs,partial_grad_lst):
+            if prev_node.requires_grad:
+                node_to_output_grads_list[prev_node].append(partial_grad)
     ### END YOUR SOLUTION
 
 
@@ -394,14 +417,23 @@ def find_topo_sort(node_list: List[Value]) -> List[Value]:
     sort.
     """
     ### BEGIN YOUR SOLUTION
-    raise NotImplementedError()
+    res = []
+    visited = set()
+    for node in node_list:
+        topo_sort_dfs(node, visited, res)
+    return  res
     ### END YOUR SOLUTION
 
 
 def topo_sort_dfs(node, visited, topo_order):
     """Post-order DFS"""
     ### BEGIN YOUR SOLUTION
-    raise NotImplementedError()
+    for prev_node in node.inputs:
+        if prev_node in visited:
+            continue
+        topo_sort_dfs(prev_node, visited, topo_order)
+    topo_order.append(node)
+    visited.add(node)
     ### END YOUR SOLUTION
 
 
@@ -414,5 +446,4 @@ def sum_node_list(node_list):
     """Custom sum function in order to avoid create redundant nodes in Python sum implementation."""
     from operator import add
     from functools import reduce
-
     return reduce(add, node_list)

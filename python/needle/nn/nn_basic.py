@@ -80,20 +80,24 @@ class Identity(Module):
 
 
 class Linear(Module):
-    def __init__(
-        self, in_features, out_features, bias=True, device=None, dtype="float32"
-    ):
+    def __init__(self, in_features: int, out_features: int, bias: bool = True, device: Any | None = None, dtype: str = "float32") -> None:
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
 
         ### BEGIN YOUR SOLUTION
-        raise NotImplementedError()
+        self.weight = Parameter(init.kaiming_uniform(in_features, out_features, device=device, dtype=dtype))
+        self.bias = None
+        if bias:
+            self.bias = Parameter(init.kaiming_uniform(out_features, 1, device=device, dtype=dtype).transpose())
         ### END YOUR SOLUTION
 
     def forward(self, X: Tensor) -> Tensor:
         ### BEGIN YOUR SOLUTION
-        raise NotImplementedError()
+        out = ops.matmul(X, self.weight)
+        if self.bias is not None:
+            out = out + ops.broadcast_to(self.bias, out.shape)
+        return out 
         ### END YOUR SOLUTION
 
 
@@ -161,12 +165,23 @@ class LayerNorm1d(Module):
         self.dim = dim
         self.eps = eps
         ### BEGIN YOUR SOLUTION
-        raise NotImplementedError()
+        # 一开始是恒等变换
+        self.weight = Parameter(init.ones(1, dim, device=device, dtype=dtype)) #  
+        self.bias = Parameter(init.zeros(1, dim, device=device, dtype=dtype))
         ### END YOUR SOLUTION
 
     def forward(self, x: Tensor) -> Tensor:
         ### BEGIN YOUR SOLUTION
-        raise NotImplementedError()
+        """
+        assume the input to this layer is a 2D tensor, with batches in the first dimension and features in the second
+        x: (b, n)
+        """
+        batch_size, feature_num = x.shape
+        mu = ops.summation(x, axes=1) / feature_num  # (b,)
+        mu = mu.reshape((batch_size, 1)).broadcast_to(x.shape)  # (b, n)
+        sigma = ((x - mu)**2).sum(axes=1) / feature_num + self.eps  # (b,)
+        sigma = (sigma**0.5).reshape((batch_size, 1)).broadcast_to(x.shape)  # (b, n)
+        return self.weight.broadcast_to(x.shape) * (x-mu)/sigma + self.bias.broadcast_to(x.shape)
         ### END YOUR SOLUTION
 
 
@@ -177,7 +192,10 @@ class Dropout(Module):
 
     def forward(self, x: Tensor) -> Tensor:
         ### BEGIN YOUR SOLUTION
-        raise NotImplementedError()
+        if self.training:
+            mask = init.randb(*x.shape, p=1-self.p, device=x.device, dtype="float32") / (1-self.p)
+            return x * mask
+        return x
         ### END YOUR SOLUTION
 
 
