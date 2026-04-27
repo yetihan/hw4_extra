@@ -327,7 +327,15 @@ class Transformer(Module):
         self.batch_first = batch_first
 
         ### BEGIN YOUR SOLUTION
-        raise NotImplementedError()
+        self.pos_layer = Embedding(sequence_len, embedding_size, device=device, dtype=dtype)
+        
+        self.layers = []
+        for i in range(num_layers):
+            layer = TransformerLayer(embedding_size, num_head, dim_head, hidden_size
+                                                  , dropout=dropout, causal=causal
+                                                  , device=device, dtype=dtype)
+            self.layers.append(layer)
+        
         ### END YOUR SOLUTION
 
     def forward(
@@ -339,7 +347,22 @@ class Transformer(Module):
             x = ops.transpose(x, axes=(0, 1))
 
         ### BEGIN YOUR SOLUTION
-        raise NotImplementedError()
+        bs, seq_len, embedding_dim = x.shape
+
+        # pos_idx = Tensor(np.arange(seq_len).reshape((1, seq_len)), device=self.device, dtype=self.dtype)  # (seq_len, )
+        # pos_emb = self.pos_layer(pos_idx)  # (1, seq_len, embedding_dim)
+        # pos_emb = pos_emb.broadcast_to((bs, seq_len, embedding_dim))  # (bs, seq_len, embedding_dim)
+        
+        # embedding layer 的调用更加符合语义,      Input: x of shape (seq_len, bs)
+        pos_idx = Tensor(np.arange(seq_len).reshape((seq_len, 1)), device=self.device, dtype=self.dtype)  # (seq_len, )
+        pos_emb = self.pos_layer(pos_idx)  # (seq_len, 1, embedding_dim)
+        pos_emb = pos_emb.transpose((0,1)).broadcast_to((bs, seq_len, embedding_dim))  # (bs, seq_len, embedding_dim)
+        
+        
+        x += pos_emb
+        
+        for layer in self.layers:
+            x = layer(x)
         ### END YOUR SOLUTION
 
         if not self.batch_first:
