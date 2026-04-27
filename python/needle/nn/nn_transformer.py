@@ -110,7 +110,7 @@ class MultiHeadAttention(Module):
         Input: three states q, k, v, with shape (batch_size, num_head, seq_len, dim_head)
         Output: the activation output `result` and attention softmax probability `probs` (with dropout applied)
         """
-        batch_size, num_head, queries_len, q_dim = q.shape
+        batch_size, num_head, queries_len, q_dim = q.shape #  B,H,T,D
         _, _, keys_values_len, k_dim = k.shape
         _, _, _, v_dim = v.shape
 
@@ -216,14 +216,34 @@ class AttentionLayer(Module):
         if v is None:
             v = q
 
-        batch_size, queries_len, q_dim = q.shape
-        _, keys_values_len, k_dim = k.shape
+        B, q_len, q_dim = q.shape
+        _, kv_len, k_dim = k.shape
         _, _, v_dim = v.shape
 
         result = None
 
         ### BEGIN YOUR SOLUTION
-        raise NotImplementedError()
+        H = self.num_head
+        D = self.dim_head
+        
+        Q = self.q_projection(self.prenorm_q(q.reshape((B*q_len, q_dim )))).reshape((B, q_len, H, D))
+        K = self.k_projection(self.prenorm_k(k.reshape((B*kv_len, k_dim )))).reshape((B, kv_len,  H, D))
+        V = self.v_projection(self.prenorm_v(v.reshape((B*kv_len, v_dim )))).reshape((B, kv_len,  H, D))
+        # B,T,H,D -> B,H,T,D
+        Q = Q.transpose((1,2))
+        K = K.transpose((1,2))
+        V = V.transpose((1,2))
+        
+        res, self.probs = self.attn(Q,K,V)
+        if TYPE_CHECKING:
+            res = cast(Tensor, res)
+        T = q_len 
+        # B,H,T,D -> B,T,H,D-> B*T,H*D
+        res = res.transpose((1,2)).reshape((B*T,H*D))
+        
+        result = self.out_projection(res).reshape((B, T, self.out_features))
+
+
         ### END YOUR SOLUTION
 
         return result
@@ -250,7 +270,17 @@ class TransformerLayer(Module):
         self.dtype = dtype
 
         ### BEGIN YOUR SOLUTION
-        raise NotImplementedError()
+        self.mha = AttentionLayer(q_features, num_head, dim_head,
+                                dropout=dropout, causal=causal,device=device,dtype=dtype)
+        self.dropout1 = Dropout(p=dropout)
+        
+        self.dropout2 = Dropout(p=dropout)
+        
+        linear1 = Linear(in_features=q_features, out_features=hidden_size, bias=True, device=device, dtype=dtype)
+        linear2 = Linear(in_features=hidden_size, out_features=q_features, bias=True, device=device, dtype=dtype)
+        self.ffn = Sequential(linear1, ReLU(), Dropout(p=dropout), linear2)
+        self.layer_norm = LayerNorm1d(
+            q_features, device=device, dtype=dtype)
         ### END YOUR SOLUTION
 
     def forward(
@@ -263,12 +293,12 @@ class TransformerLayer(Module):
         Ouput: the hidden states after the Transformer Layer `x` with shape (batch_size, seq_len, x_dim)
         """
 
-        batch_size, seq_len, x_dim = x.shape
-
+        B, T, x_dim = x.shape
         ### BEGIN YOUR SOLUTION
-        raise NotImplementedError()
+        x = x+self.dropout1(self.mha(x))
+        ffn_input = x.reshape((B*T, x_dim))
+        x = x + self.dropout2(self.ffn(self.layer_norm(ffn_input)).reshape((B, T, x_dim)))
         ### END YOUR SOLUTION
-
         return x
 
 
