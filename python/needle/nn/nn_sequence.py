@@ -2,9 +2,9 @@
 """
 from typing import List
 from needle.autograd import Tensor
-from needle import ops
 import needle.init as init
-import numpy as np
+import needle as ndl
+from needle import ops
 from .nn_basic import Parameter, Module
 
 
@@ -14,7 +14,7 @@ class Sigmoid(Module):
 
     def forward(self, x: Tensor) -> Tensor:
         ### BEGIN YOUR SOLUTION
-        raise NotImplementedError()
+        return (1 + ops.exp(-x)) ** (-1)
         ### END YOUR SOLUTION
 
 class RNNCell(Module):
@@ -38,7 +38,15 @@ class RNNCell(Module):
         """
         super().__init__()
         ### BEGIN YOUR SOLUTION
-        raise NotImplementedError()
+        bound = 1/(hidden_size**0.5)
+        self.W_ih = Parameter(init.rand(input_size, hidden_size, low=-bound, high=bound, device=device))
+        self.W_hh = Parameter(init.rand(hidden_size, hidden_size, low=-bound, high=bound, device=device))
+        self.bias = bias
+        if bias:
+            self.bias_ih = Parameter(init.rand(hidden_size, low=-bound, high=bound, device=device))
+            self.bias_hh = Parameter(init.rand(hidden_size, low=-bound, high=bound, device=device))
+        self.activation_func = ndl.tanh if nonlinearity=='tanh' else ndl.relu
+        self.device = device
         ### END YOUR SOLUTION
 
     def forward(self, X, h=None):
@@ -53,7 +61,14 @@ class RNNCell(Module):
             for each element in the batch.
         """
         ### BEGIN YOUR SOLUTION
-        raise NotImplementedError()
+        h_shape = (X.shape[0], self.W_hh.shape[1])
+        if h is None:
+            h = init.zeros(*h_shape, device=self.device)
+        s = X@self.W_ih + h@self.W_hh
+        if self.bias:
+            s = s + self.bias_ih.reshape((1,h_shape[1])).broadcast_to(h_shape) \
+                  + self.bias_hh.reshape((1,h_shape[1])).broadcast_to(h_shape)
+        return self.activation_func(s)
         ### END YOUR SOLUTION
 
 
@@ -82,7 +97,13 @@ class RNN(Module):
         """
         super().__init__()
         ### BEGIN YOUR SOLUTION
-        raise NotImplementedError()
+        """
+        RNN = 多层 ✖️ 多时间步的 RNNCell 调用。
+        """
+        self.device = device
+        self.rnn_cells: List[RNNCell] = [RNNCell(input_size if k==0 else hidden_size
+                                                 , hidden_size, bias, nonlinearity, device, dtype) 
+                                         for k in range(num_layers)]
         ### END YOUR SOLUTION
 
     def forward(self, X, h0=None):
@@ -98,7 +119,24 @@ class RNN(Module):
         h_n of shape (num_layers, bs, hidden_size) containing the final hidden state for each element in the batch.
         """
         ### BEGIN YOUR SOLUTION
-        raise NotImplementedError()
+        seq_len, bs, _ = X.shape
+        num_layers = len(self.rnn_cells)
+        hidden_size = self.rnn_cells[0].W_ih.shape[1]
+        h_shape = (num_layers, bs, hidden_size) #(num_layers, bs, hidden_size)
+        if h0 is None:
+            h_tensor = init.zeros(*h_shape, device=self.device)
+        else:
+            assert(h0.shape==h_shape)
+            h_tensor = h0
+            
+        h = list(ndl.split(h_tensor, axis=0)) # num_layers
+        H = list(ndl.split(X, axis=0)) # seq_len
+        
+        for i in range(num_layers):
+            for j in range(seq_len):
+                h[i] = self.rnn_cells[i](H[j], h[i])
+                H[j] = h[i]
+        return ndl.stack(H, axis=0), ndl.stack(h, axis=0)
         ### END YOUR SOLUTION
 
 
@@ -122,7 +160,19 @@ class LSTMCell(Module):
         """
         super().__init__()
         ### BEGIN YOUR SOLUTION
-        raise NotImplementedError()
+        bound = 1/hidden_size
+        self.hidden_size = hidden_size
+        self.device = device
+        self.dtype = dtype
+        self.W_ih = Parameter(init.rand(input_size, 4*hidden_size, low=-bound, high=bound, device=device, dtype=dtype))
+        self.W_hh = Parameter(init.rand(hidden_size, 4*hidden_size, low=-bound, high=bound, device=device, dtype=dtype))
+        self.bias = bias
+        if bias:
+            self.bias_ih = Parameter(init.rand(4*hidden_size, low=-bound, high=bound, device=device, dtype=dtype))
+            self.bias_hh = Parameter(init.rand(4*hidden_size, low=-bound, high=bound, device=device, dtype=dtype))
+        else:
+            self.bias_ih = init.zeros(4*hidden_size, device=device, dtype=dtype)
+            self.bias_hh = self.bias_ih
         ### END YOUR SOLUTION
 
 
@@ -143,7 +193,24 @@ class LSTMCell(Module):
             element in the batch.
         """
         ### BEGIN YOUR SOLUTION
-        raise NotImplementedError()
+        bs, _ = X.shape 
+        hidden_size = self.hidden_size
+        if h is None:
+            h=c=init.zeros(bs, hidden_size, device=self.device, dtype=self.dtype) 
+        else:
+            h,c=h
+        
+        mid = X@self.W_ih+h@self.W_hh
+        if self.bias:
+            mid = mid + self.bias_hh.reshape((1, 4*hidden_size)).broadcast_to((bs, 4*hidden_size))\
+                      + self.bias_ih.reshape((1, 4*hidden_size)).broadcast_to((bs, 4*hidden_size))
+
+        mid_4 = mid.reshape((bs, 4, hidden_size))
+        i,f,g,o = ndl.split(mid_4, axis=1)
+        i,f,g,o = ndl.sigmoid(i), ndl.sigmoid(f), ndl.tanh(g), ndl.sigmoid(o)
+        c = f*c + i*g
+        h = o*ndl.tanh(c)
+        return h,c
         ### END YOUR SOLUTION
 
 
@@ -171,7 +238,9 @@ class LSTM(Module):
             of shape (4*hidden_size,).
         """
         ### BEGIN YOUR SOLUTION
-        raise NotImplementedError()
+        self.lstm_cells = [LSTMCell(input_size if k==0 else hidden_size
+                                    , hidden_size, bias, device, dtype) 
+                           for k in range(num_layers)]
         ### END YOUR SOLUTION
 
     def forward(self, X, h=None):
@@ -192,7 +261,26 @@ class LSTM(Module):
             h_n of shape (num_layers, bs, hidden_size) containing the final hidden cell state for each element in the batch.
         """
         ### BEGIN YOUR SOLUTION
-        raise NotImplementedError()
+        seq_len, bs, _ = X.shape
+        num_layers = len(self.lstm_cells)
+        hidden_size = self.lstm_cells[0].hidden_size
+        if h is not None:
+            h_tensor, c_tensor = h
+        else:
+            device, dtype = self.lstm_cells[0].device, self.lstm_cells[0].dtype 
+            h_tensor = c_tensor = init.zeros(num_layers, bs, hidden_size, device=device, dtype=dtype)
+
+        h = list(ndl.split(h_tensor, axis=0)) # num_layers
+        c = list(ndl.split(c_tensor, axis=0)) # num_layers
+
+        H = list(ndl.split(X, axis=0)) # seq_len
+        for i in range(num_layers):
+            lstm_cell = self.lstm_cells[i]
+            for j in range(seq_len):
+                h[i], c[i] = lstm_cell.forward(H[j], (h[i], c[i]))
+                H[j] = h[i]
+                
+        return ndl.stack(H, axis=0), (ndl.stack(h, axis=0), ndl.stack(c, axis=0))
         ### END YOUR SOLUTION
 
 class Embedding(Module):
@@ -210,7 +298,11 @@ class Embedding(Module):
             initialized from N(0, 1).
         """
         ### BEGIN YOUR SOLUTION
-        raise NotImplementedError()
+        self.device = device
+        self.dtype = dtype
+        self.num_embeddings = num_embeddings
+        self.embedding_dim = embedding_dim
+        self.weight = Parameter(init.randn(num_embeddings, embedding_dim, device=device, dtype=dtype))
         ### END YOUR SOLUTION
 
     def forward(self, x: Tensor) -> Tensor:
@@ -224,5 +316,8 @@ class Embedding(Module):
         output of shape (seq_len, bs, embedding_dim)
         """
         ### BEGIN YOUR SOLUTION
-        raise NotImplementedError()
+        seq_len, bs = x.shape
+        one_hot = init.one_hot(self.num_embeddings, x, device=self.device, dtype=self.dtype) # (seq_len, bs, num_embeddings)
+        res = one_hot.reshape((seq_len*bs, self.num_embeddings)) @ self.weight
+        return res.reshape((seq_len, bs, self.embedding_dim))
         ### END YOUR SOLUTION
