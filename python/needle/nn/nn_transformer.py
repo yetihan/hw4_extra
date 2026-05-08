@@ -123,11 +123,16 @@ class MultiHeadAttention(Module):
         
         # softmax(q@k.T/d**0.5+mask)v
         
+        # 【★ Attention scores softmax(QK^T)】
+        # s 形状 (B, H, T, T),激活内存 O(b × heads × T²)
+        # 这里是唯一一项跟 T² 挂钩的开销,T 大时压倒其他所有 O(b × T × h) 项
+        # 经验规则:d_head 几乎总是 64 或 128,所以 heads ≈ h / 64 或 h / 128,即 heads 比 h 小约 2 个数量级
         s = self.matmul(q, k.T)/np.sqrt(q_dim)
         if self.causal:
             mask = self.create_causal_mask(keys_values_len, queries_len, device=self.device)
             mask = mask.broadcast_to(s.shape)
             s = s + mask
+        # softmax 后的 probs 形状仍是 (B, H, T, T),同样计入 O(b × heads × T²)
         probs = self.dropout(self.softmax(s))
         result =  self.matmul(probs, v)        
         ### END YOUR SOLUTION
@@ -172,6 +177,10 @@ class AttentionLayer(Module):
         self.num_head = num_head
         self.dim_head = dim_head
 
+        # 【cost table: LayerNorm in/out × 2 → 第 1 个(Attention 前)】
+        # 每次 LayerNorm 的输入/输出激活形状均为 (B, T, h) → O(b × T × h)
+        # 注:本实现给 q/k/v 各配了一个 prenorm;self-attention 时三者输入相同,
+        # 概念上等价于「pre-MHA 的那 1 次 LayerNorm」
         self.prenorm_q = LayerNorm1d(
             q_features, device=device, dtype=dtype)
         self.prenorm_k = LayerNorm1d(
@@ -226,6 +235,9 @@ class AttentionLayer(Module):
         H = self.num_head
         D = self.dim_head
         
+        # 【QKV projection 输出 — O(b × T × h) × 3】
+        # 每个 projection 输出形状 (B, T, H*D) = (B, T, h),共 3 份独立激活,故 × 3
+        # (h = num_head × dim_head = q_features)
         Q = self.q_projection(self.prenorm_q(q.reshape((B*q_len, q_dim )))).reshape((B, q_len, H, D))
         K = self.k_projection(self.prenorm_k(k.reshape((B*kv_len, k_dim )))).reshape((B, kv_len,  H, D))
         V = self.v_projection(self.prenorm_v(v.reshape((B*kv_len, v_dim )))).reshape((B, kv_len,  H, D))
@@ -241,6 +253,8 @@ class AttentionLayer(Module):
         # B,H,T,D -> B,T,H,D-> B*T,H*D
         res = res.transpose((1,2)).reshape((B*T,H*D))
         
+        # 【cost table: Attention output projection — O(b × T × h)】
+        # out_projection 把 (B*T, h) 映回 (B, T, out_features=h),只产生 1 份激活
         result = self.out_projection(res).reshape((B, T, self.out_features))
 
 
@@ -250,6 +264,20 @@ class AttentionLayer(Module):
 
 
 class TransformerLayer(Module):
+    """
+    一个 transformer block 的激活内存账单(对应 cost table):
+      +-----------------------------------+--------------------------+
+      | 来源                              | Scaling                  |
+      +-----------------------------------+--------------------------+
+      | QKV projection 输出               | O(b × T × h) × 3         |
+      | ★ Attention scores softmax(QK^T) | O(b × heads × T²) ← 主导 |
+      | Attention output projection       | O(b × T × h)             |
+      | FFN intermediate (4h dim)         | O(b × T × 4h)            |
+      | LayerNorm in/out                  | O(b × T × h) × 2         |
+      +-----------------------------------+--------------------------+
+    其中 b=batch, T=seq_len, h=q_features=num_head*dim_head, heads=num_head。
+    具体代码位置在下面用「【cost table: ...】」注释逐一标出。
+    """
 
     def __init__(
         self,
@@ -276,9 +304,19 @@ class TransformerLayer(Module):
         
         self.dropout2 = Dropout(p=dropout)
         
+        # 【cost table: FFN intermediate (4h dim) — O(b × T × 4h)】
+        # hidden_size 不是硬性 = 4h,而是按模型族不同有多种约定:
+        #   - 原版 / BERT / GPT-2/3 / T5-base/large:  4×    (cost table 的默认假设)
+        #   - LLaMA 全系等 SwiGLU 模型:              ≈2.67× (=8/3,补偿 gated FFN 多出的第 3 个矩阵)
+        #   - T5-3B / T5-11B 等"宽 FFN":             16× ~ 64×
+        # linear1 的输出激活形状 (B, T, hidden_size),是 FFN 内部的胖中间层 → O(b × T × hidden_size)
+        # linear2 把它再压回 (B, T, h),不再单独占这一档
         linear1 = Linear(in_features=q_features, out_features=hidden_size, bias=True, device=device, dtype=dtype)
         linear2 = Linear(in_features=hidden_size, out_features=q_features, bias=True, device=device, dtype=dtype)
         self.ffn = Sequential(linear1, ReLU(), Dropout(p=dropout), linear2)
+        # 【cost table: LayerNorm in/out × 2 → 第 2 个(FFN 前)】
+        # 输入/输出激活形状 (B, T, h) → O(b × T × h)
+        # 与 AttentionLayer 内部的 prenorm 合起来构成账单中的 × 2
         self.layer_norm = LayerNorm1d(
             q_features, device=device, dtype=dtype)
         ### END YOUR SOLUTION
